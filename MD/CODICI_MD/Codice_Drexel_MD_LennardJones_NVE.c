@@ -21,8 +21,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include <gsl/gsl_rng.h>
 #include <gsl/gsl_randist.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 /* Prints usage information */
 void usage ( void ) {
@@ -39,8 +42,11 @@ void usage ( void ) {
   fprintf(stdout,"\t -fs [integer]\t\tSample frequency\n");
   fprintf(stdout,"\t -sf [a|w]\t\tAppend or write config output file\n");
   fprintf(stdout,"\t -icf [string]\t\tInitial configuration file\n");
+  fprintf(stdout,"\t -ecorr [0|1]\t\tEnable the calculation of the energy correction\n");
   fprintf(stdout,"\t -seed [integer]\tRandom number generator seed\n");
   fprintf(stdout,"\t -uf          \t\tPrint unfolded coordinates in output files\n");
+  fprintf(stdout,"\t -F [string]\t\tName of the folder in which the output is put\n");
+  fprintf(stdout,"\t -outname [string]\tName of the energy output file\n");
   fprintf(stdout,"\t -h           \t\tPrint this info\n");
 }
 
@@ -229,7 +235,7 @@ int main ( int argc, char * argv[] ) {
   int * ix, * iy, * iz;
   int N=216,c,a;
   double L=0.0;
-  double rho=0.5, T=0.0, rc2 = 1.e20, vir, vir_old, vir_sum, pcor, V;
+  double rho=0.5, T=0.0, rc = 1.e20, vir, vir_old, vir_sum, pcor, V;
   double PE, KE, TE, ecor, ecut, T0=1.0, TE0;
   double rr3,dt=0.001, dt2;
   int i,j,s;
@@ -237,12 +243,14 @@ int main ( int argc, char * argv[] ) {
   int short_out=0;
   int use_e_corr=0;
   int unfold = 0;
+  char *folder, *name;
+  folder = "NULL";
+  name = "energies.txt";
 
-  char fn[20];
-  FILE * out;
+  char* fn;
+  FILE *out, *out_name;
   char * wrt_code_str = "w";
   char * init_cfg_file = NULL;
-
   gsl_rng * r = gsl_rng_alloc(gsl_rng_mt19937);
   unsigned long int Seed = 23410981;
 
@@ -253,16 +261,18 @@ int main ( int argc, char * argv[] ) {
     else if (!strcmp(argv[i],"-rho")) rho=atof(argv[++i]);
     else if (!strcmp(argv[i],"-T")) T=atof(argv[++i]);
     else if (!strcmp(argv[i],"-dt")) dt=atof(argv[++i]);
-    else if (!strcmp(argv[i],"-rc")) rc2=atof(argv[++i]);
+    else if (!strcmp(argv[i],"-rc")) rc=atof(argv[++i]);
     else if (!strcmp(argv[i],"-ns")) nSteps = atoi(argv[++i]);
     else if (!strcmp(argv[i],"-so")) short_out=1;
     else if (!strcmp(argv[i],"-T0")) T0=atof(argv[++i]);
     else if (!strcmp(argv[i],"-fs")) fSamp=atoi(argv[++i]);
     else if (!strcmp(argv[i],"-sf")) wrt_code_str = argv[++i];
     else if (!strcmp(argv[i],"-icf")) init_cfg_file = argv[++i];
-    else if (!strcmp(argv[i],"-ecorr")) use_e_corr = 1;
+    else if (!strcmp(argv[i],"-ecorr")) use_e_corr = atoi(argv[++i]);
     else if (!strcmp(argv[i],"-seed")) Seed = (unsigned long)atoi(argv[++i]);
     else if (!strcmp(argv[i],"-uf")) unfold = 1;
+    else if (!strcmp(argv[i],"-F")) folder = argv[++i];
+    else if (!strcmp(argv[i],"-outname")) name = argv[++i];
     else if (!strcmp(argv[i],"-h")) {
       usage(); exit(0);
     }
@@ -277,22 +287,31 @@ int main ( int argc, char * argv[] ) {
   L = pow((V=N/rho),0.3333333);
 
   /* Compute the tail-corrections; assumes sigma and epsilon are both 1 */
-  rr3 = 1.0/(rc2*rc2*rc2);
+  rr3 = 1.0/(rc*rc*rc);
   ecor = use_e_corr?8*M_PI*rho*(rr3*rr3*rr3/9.0-rr3/3.0):0.0;
   pcor = use_e_corr?16.0/3.0*M_PI*rho*rho*(2./3.*rr3*rr3*rr3-rr3):0.0;
   ecut = 4*(rr3*rr3*rr3*rr3-rr3*rr3);
 
-  /* Compute the *squared* cutoff, reusing the variable rc2 */
-  rc2*=rc2;
+
+  /* Compute the *squared* cutoff, using the variable rc2 */
+  double rc2 = rc*rc;
 
   /* compute the squared time step */
   dt2=dt*dt;
+  
+  /*If specified, creating a folder and entering it*/
+  if(!!strcmp(folder,"NULL")){
+  	mkdir(folder,0777);
+  	chdir(folder);
+  }
+  
 
   /* Output some initial information */
-  fprintf(stdout,"# NVE MD Simulation of a Lennard-Jones fluid\n");
-  fprintf(stdout,"# L = %.5lf; rho = %.5lf; N = %i; rc = %.5lf\n",
+  out_name = fopen(name,"w");
+  fprintf(out_name,"# NVE MD Simulation of a Lennard-Jones fluid\n");
+  fprintf(out_name,"# L = %.5lf; rho = %.5lf; N = %i; rc = %.5lf\n",
 	  L,rho,N,sqrt(rc2));
-  fprintf(stdout,"# nSteps %i, seed %d, dt %.5lf\n",
+  fprintf(out_name,"# nSteps %i, seed %ld, dt %.5lf\n",
 	  nSteps,Seed,dt);
   
   /* Seed the random number generator */
@@ -322,6 +341,8 @@ int main ( int argc, char * argv[] ) {
      and measure initial energy */
   init(rx,ry,rz,vx,vy,vz,ix,iy,iz,N,L,r,T0,&KE,init_cfg_file);
   sprintf(fn,"%i.xyz",0);
+  
+  printf("%s\n",fn);
   out=fopen(fn,"w");
   xyz_out(out,rx,ry,rz,vx,vy,vz,ix,iy,iz,L,N,16,1,unfold);
   fclose(out);
@@ -329,7 +350,7 @@ int main ( int argc, char * argv[] ) {
   PE = total_e(rx,ry,rz,fx,fy,fz,N,L,rc2,ecor,ecut,&vir_old);
   TE0=PE+KE;
   
-  fprintf(stdout,"# step PE KE TE drift T P\n");
+  fprintf(out_name,"# step PE KE TE drift T P\n");
 
   for (s=0;s<nSteps;s++) {
 
@@ -362,7 +383,7 @@ int main ( int argc, char * argv[] ) {
     }
     KE*=0.5;
     TE=PE+KE;
-    fprintf(stdout,"%i %.5lf %.5lf %.5lf %.5lf %.5le %.5lf %.5lf\n",
+    fprintf(out_name,"%i %.5lf %.5lf %.5lf %.5lf %.5le %.5lf %.5lf\n",
 	    s,s*dt,PE,KE,TE,(TE-TE0)/TE0,KE*2/3./N,rho*KE*2./3./N+vir/3.0/V);
     if (!(s%fSamp)) {
       sprintf(fn,"%i.xyz",!strcmp(wrt_code_str,"a")?0:s);
@@ -371,4 +392,5 @@ int main ( int argc, char * argv[] ) {
       fclose(out);
     }
   }
+  fclose(out_name);
 }
